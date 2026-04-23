@@ -61,7 +61,7 @@ const machineSchema = new mongoose.Schema({
   machineType: { type: String, required: true },
   status: { type: String, enum: ['operational', 'breakdown', 'maintenance'], default: 'operational' },
   breakdowns: [breakdownSchema],
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -211,6 +211,8 @@ app.get('/api/users', authenticate, async (req, res) => {
 });
 
 // ── MACHINE ROUTES ───────────────────────────────────
+
+// GET all machines - anyone can view
 app.get('/api/machines', authenticate, async (req, res) => {
   try {
     const { search } = req.query;
@@ -231,6 +233,7 @@ app.get('/api/machines', authenticate, async (req, res) => {
   }
 });
 
+// GET single machine - anyone can view
 app.get('/api/machines/:id', authenticate, async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id)
@@ -243,6 +246,7 @@ app.get('/api/machines/:id', authenticate, async (req, res) => {
   }
 });
 
+// CREATE machine - anyone can add, but track who created it
 app.post('/api/machines', authenticate, async (req, res) => {
   try {
     const machine = new Machine({
@@ -256,6 +260,7 @@ app.post('/api/machines', authenticate, async (req, res) => {
   }
 });
 
+// ADD BREAKDOWN - anyone can add breakdown to ANY machine
 app.post('/api/machines/:id/breakdown', authenticate, upload.array('images', 5), async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id);
@@ -277,6 +282,7 @@ app.post('/api/machines/:id/breakdown', authenticate, upload.array('images', 5),
   }
 });
 
+// UPDATE STATUS - anyone can update machine status
 app.put('/api/machines/:id/status', authenticate, async (req, res) => {
   try {
     const machine = await Machine.findByIdAndUpdate(
@@ -290,10 +296,16 @@ app.put('/api/machines/:id/status', authenticate, async (req, res) => {
   }
 });
 
+// UPDATE MACHINE - ONLY the creator can edit machine details
 app.put('/api/machines/:id', authenticate, async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id);
     if (!machine) return res.status(404).json({ error: 'Machine not found' });
+    
+    // Check if current user is the creator
+    if (machine.createdBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'You can only edit machines you created' });
+    }
     
     const updatedMachine = await Machine.findByIdAndUpdate(
       req.params.id, 
@@ -306,10 +318,16 @@ app.put('/api/machines/:id', authenticate, async (req, res) => {
   }
 });
 
+// DELETE MACHINE - ONLY the creator can delete their machine
 app.delete('/api/machines/:id', authenticate, async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id);
     if (!machine) return res.status(404).json({ error: 'Machine not found' });
+    
+    // Check if current user is the creator
+    if (machine.createdBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'You can only delete machines you created' });
+    }
     
     // Delete associated images
     if (machine.breakdowns && machine.breakdowns.length > 0) {
