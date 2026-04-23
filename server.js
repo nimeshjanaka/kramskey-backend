@@ -62,6 +62,7 @@ const machineSchema = new mongoose.Schema({
   machineType: { type: String, required: true },
   status: { type: String, enum: ['operational', 'breakdown', 'maintenance'], default: 'operational' },
   breakdowns: [breakdownSchema],
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Track who created the machine
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -242,7 +243,9 @@ app.get('/api/machines', authenticate, async (req, res) => {
         { machineNumber: { $regex: search, $options: 'i' } }
       ]};
     }
-    const machines = await Machine.find(query).sort({ updatedAt: -1 });
+    const machines = await Machine.find(query)
+      .populate('createdBy', 'fullName email') // Populate creator info
+      .sort({ updatedAt: -1 });
     res.json(machines);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -251,7 +254,9 @@ app.get('/api/machines', authenticate, async (req, res) => {
 
 app.get('/api/machines/:id', authenticate, async (req, res) => {
   try {
-    const machine = await Machine.findById(req.params.id);
+    const machine = await Machine.findById(req.params.id)
+      .populate('createdBy', 'fullName email') // Populate creator info
+      .populate('breakdowns.addedBy', 'fullName email');
     if (!machine) return res.status(404).json({ error: 'Machine not found' });
     res.json(machine);
   } catch (err) {
@@ -259,9 +264,12 @@ app.get('/api/machines/:id', authenticate, async (req, res) => {
   }
 });
 
-app.post('/api/machines', authenticate, requireLeadMechanic, async (req, res) => {
+app.post('/api/machines', authenticate, async (req, res) => {
   try {
-    const machine = new Machine(req.body);
+    const machine = new Machine({
+      ...req.body,
+      createdBy: req.user._id // Track who created this machine
+    });
     await machine.save();
     res.status(201).json(machine);
   } catch (err) {
@@ -274,7 +282,13 @@ app.post('/api/machines/:id/breakdown', authenticate, upload.array('images', 5),
     const machine = await Machine.findById(req.params.id);
     if (!machine) return res.status(404).json({ error: 'Machine not found' });
     const imagePaths = req.files ? req.files.map(f => `/uploads/${f.filename}`) : [];
-    machine.breakdowns.unshift({ note: req.body.note, images: imagePaths, addedBy: req.user._id, addedByName: req.user.fullName, createdAt: new Date() });
+    machine.breakdowns.unshift({ 
+      note: req.body.note, 
+      images: imagePaths, 
+      addedBy: req.user._id, 
+      addedByName: req.user.fullName, 
+      createdAt: new Date() 
+    });
     machine.status = 'breakdown';
     machine.updatedAt = new Date();
     await machine.save();
@@ -286,26 +300,68 @@ app.post('/api/machines/:id/breakdown', authenticate, upload.array('images', 5),
 
 app.put('/api/machines/:id/status', authenticate, requireLeadMechanic, async (req, res) => {
   try {
-    const machine = await Machine.findByIdAndUpdate(req.params.id, { status: req.body.status, updatedAt: new Date() }, { new: true });
+    const machine = await Machine.findByIdAndUpdate(
+      req.params.id, 
+      { status: req.body.status, updatedAt: new Date() }, 
+      { new: true }
+    );
     res.json(machine);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
-app.delete('/api/machines/:id', authenticate, requireLeadMechanic, async (req, res) => {
+app.delete('/api/machines/:id', authenticate, async (req, res) => {
   try {
+    const machine = await Machine.findById(req.params.id);
+    if (!machine) return res.status(404).json({ error: 'Machine not found' });
+    
+    // Check if user is lead mechanic or the creator
+    const isCreator = machine.createdBy && machine.createdBy.toString() === req.user._id.toString();
+    const isLead = req.user.role === 'lead_mechanic';
+    
+    if (!isLead && !isCreator) {
+      return res.status(403).json({ error: 'You can only delete machines you created' });
+    }
+    
+    // Also delete associated images from uploads folder
+    if (machine.breakdowns && machine.breakdowns.length > 0) {
+      machine.breakdowns.forEach(breakdown => {
+        if (breakdown.images && breakdown.images.length > 0) {
+          breakdown.images.forEach(imagePath => {
+            const fullPath = path.join(__dirname, imagePath);
+            if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+          });
+        }
+      });
+    }
+    
     await Machine.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Machine deleted' });
+    res.json({ message: 'Machine deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.put('/api/machines/:id', authenticate, requireLeadMechanic, async (req, res) => {
+app.put('/api/machines/:id', authenticate, async (req, res) => {
   try {
-    const machine = await Machine.findByIdAndUpdate(req.params.id, { ...req.body, updatedAt: new Date() }, { new: true });
-    res.json(machine);
+    const machine = await Machine.findById(req.params.id);
+    if (!machine) return res.status(404).json({ error: 'Machine not found' });
+    
+    // Check if user is lead mechanic or the creator
+    const isCreator = machine.createdBy && machine.createdBy.toString() === req.user._id.toString();
+    const isLead = req.user.role === 'lead_mechanic';
+    
+    if (!isLead && !isCreator) {
+      return res.status(403).json({ error: 'You can only edit machines you created' });
+    }
+    
+    const updatedMachine = await Machine.findByIdAndUpdate(
+      req.params.id, 
+      { ...req.body, updatedAt: new Date() }, 
+      { new: true }
+    );
+    res.json(updatedMachine);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
