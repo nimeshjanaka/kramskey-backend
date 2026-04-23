@@ -23,7 +23,7 @@ app.use(cors({
   credentials: true
 }));
 
-// ── HEALTH CHECK (visit this URL in browser to verify Railway is alive) ──
+// ── HEALTH CHECK ──
 app.get('/', (req, res) => res.json({ status: 'CRAMSKEY API running OK' }));
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
@@ -40,7 +40,6 @@ const userSchema = new mongoose.Schema({
   companyId: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true },
   password: { type: String, required: true },
-  role: { type: String, enum: ['mechanic', 'lead_mechanic'], default: 'mechanic' },
   profilePicture: { type: String, default: '' },
   resetPasswordToken: String,
   resetPasswordExpires: Date,
@@ -62,7 +61,7 @@ const machineSchema = new mongoose.Schema({
   machineType: { type: String, required: true },
   status: { type: String, enum: ['operational', 'breakdown', 'maintenance'], default: 'operational' },
   breakdowns: [breakdownSchema],
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Track who created the machine
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -96,12 +95,6 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-const requireLeadMechanic = (req, res, next) => {
-  if (req.user.role !== 'lead_mechanic')
-    return res.status(403).json({ error: 'Only Lead Mechanic can perform this action' });
-  next();
-};
-
 // ── AUTH ROUTES ──────────────────────────────────────
 app.post('/api/auth/signup', async (req, res) => {
   try {
@@ -113,14 +106,12 @@ app.post('/api/auth/signup', async (req, res) => {
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ error: 'Email already registered' });
     const hashed = await bcrypt.hash(password, 10);
-    const count = await User.countDocuments();
-    const role = count === 0 ? 'lead_mechanic' : 'mechanic';
-    const user = new User({ fullName, companyId, email, password: hashed, role });
+    const user = new User({ fullName, companyId, email, password: hashed });
     await user.save();
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
     res.status(201).json({
       token,
-      user: { _id: user._id, fullName: user.fullName, companyId: user.companyId, email: user.email, role: user.role, profilePicture: user.profilePicture }
+      user: { _id: user._id, fullName: user.fullName, companyId: user.companyId, email: user.email, profilePicture: user.profilePicture }
     });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -139,7 +130,7 @@ app.post('/api/auth/signin', async (req, res) => {
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({
       token,
-      user: { _id: user._id, fullName: user.fullName, companyId: user.companyId, email: user.email, role: user.role, profilePicture: user.profilePicture }
+      user: { _id: user._id, fullName: user.fullName, companyId: user.companyId, email: user.email, profilePicture: user.profilePicture }
     });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -203,7 +194,7 @@ app.post('/api/auth/upload-avatar', authenticate, upload.single('avatar'), async
     }
     const avatarPath = `/uploads/${req.file.filename}`;
     const updatedUser = await User.findByIdAndUpdate(req.user._id, { profilePicture: avatarPath }, { new: true }).select('-password');
-    res.json({ profilePicture: avatarPath, user: { _id: updatedUser._id, fullName: updatedUser.fullName, companyId: updatedUser.companyId, email: updatedUser.email, role: updatedUser.role, profilePicture: updatedUser.profilePicture } });
+    res.json({ profilePicture: avatarPath, user: { _id: updatedUser._id, fullName: updatedUser.fullName, companyId: updatedUser.companyId, email: updatedUser.email, profilePicture: updatedUser.profilePicture } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -216,18 +207,6 @@ app.get('/api/users', authenticate, async (req, res) => {
     res.json(users);
   } catch (err) {
     res.status(500).json({ error: err.message });
-  }
-});
-
-app.put('/api/users/:id/role', authenticate, requireLeadMechanic, async (req, res) => {
-  try {
-    const { role } = req.body;
-    if (!['mechanic', 'lead_mechanic'].includes(role))
-      return res.status(400).json({ error: 'Invalid role' });
-    const user = await User.findByIdAndUpdate(req.params.id, { role }, { new: true }).select('-password');
-    res.json(user);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
   }
 });
 
@@ -244,7 +223,7 @@ app.get('/api/machines', authenticate, async (req, res) => {
       ]};
     }
     const machines = await Machine.find(query)
-      .populate('createdBy', 'fullName email') // Populate creator info
+      .populate('createdBy', 'fullName email')
       .sort({ updatedAt: -1 });
     res.json(machines);
   } catch (err) {
@@ -255,7 +234,7 @@ app.get('/api/machines', authenticate, async (req, res) => {
 app.get('/api/machines/:id', authenticate, async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id)
-      .populate('createdBy', 'fullName email') // Populate creator info
+      .populate('createdBy', 'fullName email')
       .populate('breakdowns.addedBy', 'fullName email');
     if (!machine) return res.status(404).json({ error: 'Machine not found' });
     res.json(machine);
@@ -268,7 +247,7 @@ app.post('/api/machines', authenticate, async (req, res) => {
   try {
     const machine = new Machine({
       ...req.body,
-      createdBy: req.user._id // Track who created this machine
+      createdBy: req.user._id
     });
     await machine.save();
     res.status(201).json(machine);
@@ -298,7 +277,7 @@ app.post('/api/machines/:id/breakdown', authenticate, upload.array('images', 5),
   }
 });
 
-app.put('/api/machines/:id/status', authenticate, requireLeadMechanic, async (req, res) => {
+app.put('/api/machines/:id/status', authenticate, async (req, res) => {
   try {
     const machine = await Machine.findByIdAndUpdate(
       req.params.id, 
@@ -311,20 +290,28 @@ app.put('/api/machines/:id/status', authenticate, requireLeadMechanic, async (re
   }
 });
 
+app.put('/api/machines/:id', authenticate, async (req, res) => {
+  try {
+    const machine = await Machine.findById(req.params.id);
+    if (!machine) return res.status(404).json({ error: 'Machine not found' });
+    
+    const updatedMachine = await Machine.findByIdAndUpdate(
+      req.params.id, 
+      { ...req.body, updatedAt: new Date() }, 
+      { new: true }
+    );
+    res.json(updatedMachine);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.delete('/api/machines/:id', authenticate, async (req, res) => {
   try {
     const machine = await Machine.findById(req.params.id);
     if (!machine) return res.status(404).json({ error: 'Machine not found' });
     
-    // Check if user is lead mechanic or the creator
-    const isCreator = machine.createdBy && machine.createdBy.toString() === req.user._id.toString();
-    const isLead = req.user.role === 'lead_mechanic';
-    
-    if (!isLead && !isCreator) {
-      return res.status(403).json({ error: 'You can only delete machines you created' });
-    }
-    
-    // Also delete associated images from uploads folder
+    // Delete associated images
     if (machine.breakdowns && machine.breakdowns.length > 0) {
       machine.breakdowns.forEach(breakdown => {
         if (breakdown.images && breakdown.images.length > 0) {
@@ -340,30 +327,6 @@ app.delete('/api/machines/:id', authenticate, async (req, res) => {
     res.json({ message: 'Machine deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
-  }
-});
-
-app.put('/api/machines/:id', authenticate, async (req, res) => {
-  try {
-    const machine = await Machine.findById(req.params.id);
-    if (!machine) return res.status(404).json({ error: 'Machine not found' });
-    
-    // Check if user is lead mechanic or the creator
-    const isCreator = machine.createdBy && machine.createdBy.toString() === req.user._id.toString();
-    const isLead = req.user.role === 'lead_mechanic';
-    
-    if (!isLead && !isCreator) {
-      return res.status(403).json({ error: 'You can only edit machines you created' });
-    }
-    
-    const updatedMachine = await Machine.findByIdAndUpdate(
-      req.params.id, 
-      { ...req.body, updatedAt: new Date() }, 
-      { new: true }
-    );
-    res.json(updatedMachine);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
   }
 });
 
